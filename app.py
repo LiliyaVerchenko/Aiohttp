@@ -7,6 +7,7 @@ import sys
 from sqlalchemy import Column, Integer, String, DateTime
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 from werkzeug.security import generate_password_hash, check_password_hash
 from aiohttp_basicauth import BasicAuthMiddleware
 
@@ -26,6 +27,7 @@ class Advertisement(Base):
 
 
 engine = create_engine('sqlite:///aiohttp.db')
+DBSession = sessionmaker(bind=engine)
 Base.metadata.create_all(engine)
 routes = web.RouteTableDef()
 
@@ -55,6 +57,7 @@ async def home(request):
 @routes.post('/create-advertisement')
 @auth.required
 async def create_advertisement(request):
+    db_session = DBSession()
     new_advertisement = await request.json()
     if not new_advertisement or "title" not in new_advertisement:
         raise web.HTTPBadRequest(reason='Ошибка в запросе')
@@ -69,12 +72,9 @@ async def create_advertisement(request):
     print(creator)
     new_advertisement = Advertisement(title=title, description=description, date=date, creator=creator)
     print(new_advertisement)
-    async with aiohttp.ClientSession() as session:
-            await engine.execute("""insert into advertisement values ...""")
-            # await engine.session.get()
-            # await engine.session.commit()
-    # except:
-    #     return 'При добавлении объявления произошла ошибка'
+    async with aiohttp.ClientSession():
+            db_session.add(new_advertisement)
+            db_session.commit()
 
 app.add_routes(routes)
 
