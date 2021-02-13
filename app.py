@@ -144,7 +144,6 @@ async def update_advertisement(request: web.Request):
         else:
             raise web.HTTPNotFound(text=f"Редактировать объявление может только его автор")
 
-
 app.add_routes(routes)
 
 if __name__ == '__main__':
