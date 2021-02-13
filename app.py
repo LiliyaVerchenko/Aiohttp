@@ -1,17 +1,21 @@
 import datetime
 import sqlalchemy
-from aiohttp import web, ClientSession
+from aiohttp import web, ClientSession, BasicAuth, hdrs
 import aiohttp
 import asyncio
 import sys
-from sqlalchemy import Column, Integer, String, DateTime
+import json
+from sqlalchemy import Column, Integer, String, DateTime, select
 from sqlalchemy import create_engine
+from sqlalchemy import create_engine
+from sqlalchemy.dialects.sqlite import json
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 from werkzeug.security import generate_password_hash, check_password_hash
 from aiohttp_basicauth import BasicAuthMiddleware
 
 Base = declarative_base()
-# auth = BasicAuthMiddleware(username='user', password='password', force=False)
 
 class Advertisement(Base):
     __tablename__ = 'advertisement'
@@ -24,8 +28,8 @@ class Advertisement(Base):
     def __repr__(self):
         return f'Объявление {self.title}, {self.description}, {self.creator}, {self.date}'
 
-
 engine = create_engine('sqlite:///aiohttp.db')
+DBSession = sessionmaker(bind=engine)
 Base.metadata.create_all(engine)
 routes = web.RouteTableDef()
 
@@ -35,46 +39,111 @@ users = {
     "user2": generate_password_hash("zxcvbnbnmm2"),
     "user3": generate_password_hash("zxcvbnbnmm3")
 }
+
+
 class CustomBasicAuth(BasicAuthMiddleware):
     async def check_credentials(self, username, password, request):
-        print(username, 1)
-        print(password)
         if username in users and \
                 check_password_hash(users.get(username), password):
             return username
+
+
 auth = CustomBasicAuth()
 app = web.Application(middlewares=[auth])
-
-@routes.get('/home')
-@auth.required
-async def home(request):
-    user = auth.user()
-    return web.Response(text=f'hello {user}')
 
 
 @routes.post('/create-advertisement')
 @auth.required
-async def create_advertisement(request):
+async def create_advertisement(request: web.Request):
+    auth_adv = BasicAuth.decode(auth_header=request.headers[hdrs.AUTHORIZATION])
+    db_session = DBSession()
     new_advertisement = await request.json()
-    if not new_advertisement or "title" not in new_advertisement:
-        raise web.HTTPBadRequest(reason='Ошибка в запросе')
-
     title = new_advertisement["title"]
-    print(title, 1)
     description = new_advertisement["description"]
-    print(description, 2)
-    date = datetime.datetime.utcnow()
-    print(date)
-    creator = new_advertisement.get('username', 'Stranger')
-    print(creator)
+    date = datetime.datetime.now()
+    creator = auth_adv.login
     new_advertisement = Advertisement(title=title, description=description, date=date, creator=creator)
-    print(new_advertisement)
-    async with aiohttp.ClientSession() as session:
-            await engine.execute("""insert into advertisement values ...""")
-            # await engine.session.get()
-            # await engine.session.commit()
-    # except:
-    #     return 'При добавлении объявления произошла ошибка'
+    try:
+        async with aiohttp.ClientSession():
+            db_session.add(new_advertisement)
+            db_session.commit()
+    except IntegrityError:
+        return web.json_response({"error": 'Ошибка при сохранении'})
+    return web.Response(text='Объявление успешно добавлено')
+
+
+@routes.get('/advertisements')
+async def get_ads(request):
+    db_session = DBSession()
+    async with aiohttp.ClientSession():
+        advertisements = db_session.query(Advertisement).all()
+        if not advertisements:
+            raise web.HTTPNotFound(text='Объявления отсутствуют')
+        advertisements_all = ''
+        for adv in advertisements:
+            adv_str = f'Объявление №{adv.id}. "{adv.title}": {adv.description} \n'
+            advertisements_all = advertisements_all + adv_str
+        return web.Response(text=advertisements_all)
+
+
+@routes.get('/advertisements/{adv_id}')
+async def advertisement_page(request):
+    db_session = DBSession()
+    async with aiohttp.ClientSession():
+        adv_id = request.match_info['adv_id']
+        if adv_id.isdigit():
+            adv_id = int(adv_id)
+        else:
+            raise web.HTTPBadRequest(text='Неверный запрос')
+        adv_page = db_session.query(Advertisement).filter(Advertisement.id == adv_id).all()
+        if not adv_page:
+            raise web.HTTPNotFound(text=f"Объявление №{adv_id} отсутствует в базе")
+        return web.Response(text=str(adv_page))
+
+
+@routes.delete('/advertisements/{adv_id}/delete')
+@auth.required
+async def advertisement_delete(request: web.Request):
+    auth_adv = BasicAuth.decode(auth_header=request.headers[hdrs.AUTHORIZATION])
+    db_session = DBSession()
+    async with aiohttp.ClientSession():
+        adv_id = request.match_info['adv_id']
+        if adv_id.isdigit():
+            adv_id = int(adv_id)
+        else:
+            raise web.HTTPBadRequest(text='Неверный запрос')
+        adv_page = db_session.query(Advertisement).filter(Advertisement.id == adv_id).first()
+        if adv_page:
+            if adv_page.creator == auth_adv.login:
+                db_session.delete(adv_page)
+                db_session.commit()
+                return web.Response(text=f'Объявление №{adv_id} удалено')
+            else:
+                raise web.HTTPNotFound(text=f"Удалять объявление может только его автор")
+        else:
+            raise web.HTTPNotFound(text=f"Объявление №{adv_id} отсутствует в базе")
+
+
+@routes.patch('/advertisements/{adv_id}/update')
+@auth.required
+async def update_advertisement(request: web.Request):
+    auth_adv = BasicAuth.decode(auth_header=request.headers[hdrs.AUTHORIZATION])
+    db_session = DBSession()
+    updates = await request.json()
+    adv_id = request.match_info['adv_id']
+    adv_updates = db_session.query(Advertisement).filter(Advertisement.id == adv_id).first()
+    if updates.get('title'):
+        adv_updates.title = updates['title']
+    if updates.get('description'):
+        adv_updates.description = updates['description']
+    adv_updates.date = datetime.datetime.now()
+    async with aiohttp.ClientSession():
+        if adv_updates.creator == auth_adv.login:
+            db_session.commit()
+            return web.Response(text=f'Объявление №{adv_id} отредактировано')
+        else:
+            raise web.HTTPNotFound(text=f"Редактировать объявление может только его автор")
+
 
 app.add_routes(routes)
 
