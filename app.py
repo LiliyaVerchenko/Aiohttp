@@ -7,7 +7,6 @@ import sys
 import json
 from sqlalchemy import Column, Integer, String, DateTime, select
 from sqlalchemy import create_engine
-from sqlalchemy import create_engine
 from sqlalchemy.dialects.sqlite import json
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.declarative import declarative_base
